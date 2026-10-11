@@ -1,0 +1,162 @@
+diff --git a/backend/server.py b/backend/server.py
+index 7c81780..8ac4f9e 100644
+--- a/backend/server.py
++++ b/backend/server.py
+@@ -219,6 +219,7 @@ def should_use_rag(message: str, idx_ids: Optional[List[str]], force_rag: bool =
+     3. Smalltalk / assistant-meta → direct LLM.
+     4. Everything else → RAG.
+     """
++    return True  # RAG-only: every message goes through retrieval
+     if force_rag:
+         return True
+     if not idx_ids:
+@@ -421,6 +422,9 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
+         Pre-stream failures still answer real HTTP errors; once the SSE header
+         is out, failures become a terminal "error" event.
+         """
++        # RAG-only: this endpoint streams straight from Ollama, so it is disabled.
++        self.send_json_response({"error": "LLM Chat is disabled. This build answers from indexed documents only."}, status_code=403)
++        return
+         try:
+             data = self.read_required_json_body()
+             if data is None:
+@@ -1262,7 +1266,7 @@ def main():
+             print("✨ No empty sessions to clean up")
+ 
+         # Start the server
+-        with ReusableTCPServer(("", PORT), ChatHandler) as httpd:
++        with ReusableTCPServer(("127.0.0.1", PORT), ChatHandler) as httpd:
+             print(f"🚀 Starting localGPT backend server on port {PORT}")
+             print(f"📍 Chat endpoint: http://localhost:{PORT}/chat")
+             print(f"🔍 Health check: http://localhost:{PORT}/health")
+diff --git a/package.json b/package.json
+index 56fe8e2..7cb8cce 100644
+--- a/package.json
++++ b/package.json
+@@ -3,9 +3,9 @@
+   "version": "0.1.0",
+   "private": true,
+   "scripts": {
+-    "dev": "next dev",
++    "dev": "next dev -H 127.0.0.1",
+     "build": "next build",
+-    "start": "next start",
++    "start": "next start -H 127.0.0.1",
+     "lint": "next lint"
+   },
+   "dependencies": {
+diff --git a/rag_system/agent/loop.py b/rag_system/agent/loop.py
+index 9b3f8b3..348a2a9 100644
+--- a/rag_system/agent/loop.py
++++ b/rag_system/agent/loop.py
+@@ -407,6 +407,7 @@ Respond with JSON: {{"category": "<your_choice>"}}
+         # 🚀 NEW: Get conversation history
+         history = self.chat_histories.get(session_id, []) if session_id else []
+ 
++        force_rag = True  # RAG-only: the model's own knowledge is never used
+         if force_rag or compiled_filters is not None:
+             # A metadata filter is an instruction to search a named part of the
+             # corpus (roadmap 4.4). Letting triage answer it from the model's
+diff --git a/rag_system/api_server.py b/rag_system/api_server.py
+index c98b33d..8fb4b2f 100644
+--- a/rag_system/api_server.py
++++ b/rag_system/api_server.py
+@@ -573,7 +573,7 @@ def start_server(port=8001):
+     class ReusableTCPServer(socketserver.TCPServer):
+         allow_reuse_address = True
+ 
+-    with ReusableTCPServer(("", port), AdvancedRagApiHandler) as httpd:
++    with ReusableTCPServer(("127.0.0.1", port), AdvancedRagApiHandler) as httpd:
+         print(f"🚀 Starting Advanced RAG API server on port {port}")
+         print(f"🩺 Health endpoint: http://localhost:{port}/health")
+         print(f"💬 Chat endpoint: http://localhost:{port}/chat")
+diff --git a/rag_system/main.py b/rag_system/main.py
+index cc6b876..758b9ff 100644
+--- a/rag_system/main.py
++++ b/rag_system/main.py
+@@ -141,7 +141,7 @@ PIPELINE_CONFIGS = {
+             # against every query are dropped, so easy questions send a small,
+             # clean context instead of a fixed-size one (arm G, 2026-08-14).
+             "min_score": 0.5,
+-            "min_keep": 3
++            "min_keep": 0
+         },
+         "query_decomposition": {
+             "enabled": True,
+diff --git a/rag_system/pipelines/retrieval_pipeline.py b/rag_system/pipelines/retrieval_pipeline.py
+index e6513ad..155af8a 100644
+--- a/rag_system/pipelines/retrieval_pipeline.py
++++ b/rag_system/pipelines/retrieval_pipeline.py
+@@ -1166,7 +1166,7 @@ ORIGINAL QUESTION: "{query}"
+             for idx in scores:
+                 union_best[idx] = max(m[idx] for m in per_query if idx in m)
+             kept = [(idx, s) for idx, s in ordered if union_best[idx] >= min_score_value]
+-            if pooled:
++            if False:  # RAG-only: no rescue below the threshold
+                 # Every sub-question keeps at least its best candidate, or the
+                 # single pooled synthesis silently loses that half of the
+                 # question when nothing clears the threshold for it.
+@@ -1182,7 +1182,7 @@ ORIGINAL QUESTION: "{query}"
+                         print(f"🛟 Sub-query {qi + 1} kept its top candidate "
+                               f"(score {cands[0][1]:.2f}) despite the threshold.")
+                 kept.sort(key=lambda kv: kv[1], reverse=True)
+-            min_keep = max(1, int(rerank_cfg.get("min_keep", 3)))
++            min_keep = max(0, int(rerank_cfg.get("min_keep", 0)))
+             if len(kept) < min_keep:
+                 # Union the floor with what survived — including the
+                 # per-sub-query rescues above — instead of replacing it:
+diff --git a/run_system.py b/run_system.py
+index 117337a..0494159 100644
+--- a/run_system.py
++++ b/run_system.py
+@@ -38,6 +38,8 @@ import logging
+ from dataclasses import dataclass
+ import psutil
+ 
++NPM = 'npm.cmd' if os.name == 'nt' else 'npm'
++
+ GENERATION_MODEL = os.getenv("GENERATION_MODEL", "qwen3.5:9b")
+ ENRICHMENT_MODEL = os.getenv("ENRICHMENT_MODEL", "qwen3.5:4b")
+ 
+@@ -157,7 +159,7 @@ class ServiceManager:
+             ),
+             'frontend': ServiceConfig(
+                 name='frontend',
+-                command=['npm', 'run', 'dev' if self.mode == 'dev' else 'start'],
++                command=[NPM, 'run', 'dev' if self.mode == 'dev' else 'start'],
+                 port=3000,
+                 health_check_path='/',
+                 startup_delay=5,
+@@ -168,8 +170,8 @@ class ServiceManager:
+         # Production mode adjustments
+         if self.mode == 'prod':
+             # `next start` needs an existing .next build, so build before starting
+-            base_configs['frontend'].command = ['npm', 'run', 'start']
+-            base_configs['frontend'].build_command = ['npm', 'run', 'build']
++            base_configs['frontend'].command = [NPM, 'run', 'start']
++            base_configs['frontend'].build_command = [NPM, 'run', 'build']
+             # Add production environment variables
+             base_configs['rag-api'].env = {'NODE_ENV': 'production'}
+             base_configs['backend'].env = {'NODE_ENV': 'production'}
+@@ -210,7 +212,7 @@ class ServiceManager:
+             missing_tools.append('python')
+         
+         # Check Node.js (optional)
+-        if not self._command_exists('npm'):
++        if not self._command_exists(NPM):
+             self.logger.warning("⚠️  npm not found - frontend will be disabled")
+             self.services['frontend'].required = False
+         
+diff --git a/src/components/LandingMenu.tsx b/src/components/LandingMenu.tsx
+index b57e870..55aa69c 100644
+--- a/src/components/LandingMenu.tsx
++++ b/src/components/LandingMenu.tsx
+@@ -42,7 +42,6 @@ export function LandingMenu({ onSelect }: Props) {
+     <div className="flex gap-8">
+       <Tile label="Create new index" mode={"INDEX"} icon={FileIcon} />
+       <Tile label="Chat with index" mode={"CHAT_EXISTING"} icon={DbIcon} />
+-      <Tile label="LLM Chat" mode={"QUICK_CHAT"} icon={ChatIcon} />
+     </div>
+   );
+ } 
+\ No newline at end of file
