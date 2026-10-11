@@ -1,0 +1,36 @@
+# rebuilt by Check from upstream + docs/*.diff
+/localgpt/
+env.sh
+env.ps1
+# heavy, rebuilt per machine
+hf-cache/
+ollama-models/
+python/
+python-linux/
+bin/
+bin-linux/
+node/
+node-linux/
+.uv-cache*/
+.npm-cache*/
+.setup-tmp/
+**/.venv/
+**/.venv-linux/
+**/node_modules/
+**/.next/
+__pycache__/
+*.pyc
+# runtime data and logs
+logs/
+**/logs/
+*.db
+*.sqlite3
+# not wired in yet
+open-webui/
+private-gpt/
+# private data
+Individual Supply Contract*
+Entradas em SAP*
+Procurement_Contract_Review*
+*Chatbot_Functional_Specification*
+gate-test.txt

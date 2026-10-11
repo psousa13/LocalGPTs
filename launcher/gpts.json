@@ -1,0 +1,30 @@
+[
+  {
+    "name": "LocalGPT",
+    "description": "RAG-only contract assistant (LocalGPT + Ollama)",
+    "health_url": "http://127.0.0.1:8001/health",
+    "open_url": "http://localhost:3000",
+    "timeout": 300,
+    "linux": {
+      "cwd": "localgpt",
+      "venv_bin": "localgpt/.venv-linux/bin",
+      "path": ["bin-linux", "node-linux/bin"],
+      "env": {"CUDA_VISIBLE_DEVICES": ""},
+      "services": [
+        {"name": "ollama", "cmd": ["ollama", "serve"], "env": {"OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_CONTEXT_LENGTH": "4096"}, "mem": "3G", "wait_port": 11434},
+        {"name": "localgpt", "cmd": ["python", "run_system.py"], "mem": "9G"}
+      ]
+    },
+    "windows": {
+      "cwd": "localgpt",
+      "venv_bin": "localgpt/.venv/Scripts",
+      "path": ["bin", "node", "ollama"],
+      "env": {},
+      "timeout": 600,
+      "services": [
+        {"name": "ollama", "cmd": ["ollama", "serve"], "env": {"OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_CONTEXT_LENGTH": "4096"}, "wait_port": 11434},
+        {"name": "localgpt", "cmd": ["python", "run_system.py"]}
+      ]
+    }
+  }
+]
