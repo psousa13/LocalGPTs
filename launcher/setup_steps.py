@@ -8,9 +8,6 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 UA = {"User-Agent": "LocalGPTs-launcher"}
 
 # ---- pinned versions (change here only) ----
-UPSTREAM = "https://github.com/promtengineer/localgpt"
-PIN = "34f3107f56a88203859092312231b945a711c619"
-PATCH = ROOT / "docs" / "localgpt-changes-vs-upstream.diff"
 MODELS = ["qwen3.5:4b", "qwen3.5:2b"]
 HF_REPOS = ["microsoft/harrier-oss-v1-0.6b", "Qwen/Qwen3-Reranker-0.6B"]
 NODE_PREFIX = "v22."
@@ -77,7 +74,6 @@ class Setup:
         self.steps = [
             ("portable uv", self.c_uv, self.i_uv),
             ("Python 3.11", self.c_python, self.i_python),
-            ("localgpt source", self.c_source, self.i_source),
             ("Python packages (venv)", self.c_venv, self.i_venv),
             ("portable Node", self.c_node, self.i_node),
             ("UI packages (npm)", self.c_modules, self.i_modules),
@@ -238,9 +234,6 @@ class Setup:
     def c_python(self):
         return PYDIR.exists() and any(p.name.startswith("cpython-3.11") for p in PYDIR.iterdir())
 
-    def c_source(self):
-        return (LG / "run_system.py").exists()
-
     def c_venv(self):
         if not VPY.exists():
             return False
@@ -282,22 +275,6 @@ class Setup:
 
     def i_python(self):
         return self.run([UV, "python", "install", PYSPEC]) == 0
-
-    def i_source(self):
-        if not shutil.which("git", path=self.env["PATH"]):
-            self.log("git is not installed. Install git, then press Check again.")
-            return False
-        if LG.exists() and any(LG.iterdir()):
-            self.log("localgpt/ exists but is incomplete. Rename or delete it, then press Check again.")
-            return False
-        if not PATCH.exists():
-            self.log("patch file not found: %s" % PATCH)
-            return False
-        if self.run(["git", "clone", UPSTREAM, LG], tag="git") != 0:
-            return False
-        if self.run(["git", "checkout", "-q", PIN], cwd=LG, tag="git") != 0:
-            return False
-        return self.run(["git", "apply", "--ignore-whitespace", PATCH], cwd=LG, tag="git") == 0
 
     def i_venv(self):
         if not VPY.exists():
