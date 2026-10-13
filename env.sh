@@ -1,0 +1,15 @@
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export UV_PYTHON_INSTALL_DIR="$R/python-linux"
+export UV_CACHE_DIR="$R/.uv-cache-linux"
+export npm_config_cache="$R/.npm-cache-linux"
+export HF_HOME="$R/hf-cache"
+export OLLAMA_MODELS="$R/ollama-models"
+export OLLAMA_HOST="http://127.0.0.1:11434"
+export OLLAMA_NO_CLOUD=1
+export GENERATION_MODEL="qwen3.5:4b"
+export ENRICHMENT_MODEL="qwen3.5:2b"
+export RERANKER_MODEL="Qwen/Qwen3-Reranker-0.6B"
+export PYTHONUTF8=1
+export NEXT_TELEMETRY_DISABLED=1
+export HF_HUB_DISABLE_TELEMETRY=1
+export PATH="$R/bin-linux:$R/node-linux/bin:$PATH"

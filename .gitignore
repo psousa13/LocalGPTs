@@ -1,7 +1,5 @@
 # rebuilt by Check from upstream + docs/*.diff
 /localgpt/
-env.sh
-env.ps1
 # heavy, rebuilt per machine
 hf-cache/
 ollama-models/
@@ -25,9 +23,6 @@ logs/
 **/logs/
 *.db
 *.sqlite3
-# not wired in yet
-open-webui/
-private-gpt/
 # private data
 Individual Supply Contract*
 Entradas em SAP*

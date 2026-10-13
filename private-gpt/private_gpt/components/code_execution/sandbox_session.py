@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import posixpath
+from typing import TYPE_CHECKING
+
+from private_gpt.components.code_execution.base import CodeExecutionSession
+from private_gpt.components.code_execution.results import (
+    BashExecutionResult,
+    FileOperationResult,
+)
+from private_gpt.components.sandbox.base import SandboxExecOptions
+
+if TYPE_CHECKING:
+    from private_gpt.components.environment.environment import Environment
+    from private_gpt.components.sandbox.base import SandboxLink, SandboxSession
+
+
+class SandboxCodeExecutionSession(CodeExecutionSession):
+    """CodeExecutionSession tool protocol over a managed Environment.
+
+    The environment owns lifetime/idle tracking; its sandbox owns path
+    translation and permission enforcement. This class only adapts the
+    tool protocol on top.
+    """
+
+    def __init__(self, environment: Environment) -> None:
+        self._env = environment
+        self._id = environment.id
+
+    @property
+    def _sandbox(self) -> SandboxSession:
+        return self._env.sandbox
+
+    def _resolve_path(self, path: str) -> str:
+        if posixpath.isabs(path):
+            return path
+        return posixpath.join(self._env.workspace, path)
+
+    async def execute_bash(
+        self, command: str, timeout: int | None = None, restart: bool = False
+    ) -> BashExecutionResult:
+        workspace = self._env.workspace
+        if restart:
+            # No cwd: the default is the workspace itself, which every backend
+            # can resolve (cwd="/" is outside the local translator's mounts).
+            await self._env.exec(f"rm -rf {workspace}* {workspace}.[!.]*")
+            await self._sandbox.make_dir(workspace)
+        result = await self._env.exec(
+            command,
+            SandboxExecOptions(timeout=timeout, cwd=workspace),
+        )
+        return BashExecutionResult(
+            success=result.success,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            execution_time_ms=result.execution_time_ms,
+        )
+
+    async def view(
+        self,
+        path: str,
+        view_range: tuple[int, int] | None = None,
+        include_line_numbers: bool = True,
+    ) -> FileOperationResult:
+        path = self._resolve_path(path)
+        self._env.touch()
+        try:
+            if not await self._sandbox.path_exists(path):
+                return FileOperationResult(
+                    success=False, error=f"File not found: {path}"
+                )
+            if await self._sandbox.is_dir(path):
+                entries = await self._sandbox.list_dir(path)
+                return FileOperationResult(success=True, output="\n".join(entries))
+            raw = await self._sandbox.read_file(path)
+            text = raw.decode("utf-8", errors="replace")
+            all_lines = text.splitlines()
+            total = len(all_lines)
+            base_line = 1
+            view_lines = all_lines
+            if view_range is not None:
+                start, end = view_range
+                start_idx = max(start, 1) - 1
+                end_idx = None if end == -1 else max(end, 0)
+                view_lines = all_lines[start_idx:end_idx]
+                base_line = start_idx + 1
+            output = "\n".join(
+                f"{i}: {line}" if include_line_numbers else line
+                for i, line in enumerate(view_lines, start=base_line)
+            )
+            return FileOperationResult(success=True, output=output, total_lines=total)
+        except Exception as exc:
+            return FileOperationResult(success=False, error=str(exc))
+
+    async def str_replace(
+        self, path: str, old_str: str, new_str: str
+    ) -> FileOperationResult:
+        if not isinstance(old_str, str):
+            return FileOperationResult(
+                success=False, error="str_replace requires the old_str parameter."
+            )
+        if not isinstance(new_str, str):
+            return FileOperationResult(
+                success=False, error="str_replace requires the new_str parameter."
+            )
+        path = self._resolve_path(path)
+        self._env.touch()
+        try:
+            raw = await self._sandbox.read_file(path)
+            text = raw.decode("utf-8", errors="replace")
+            occurrences = text.count(old_str)
+            if occurrences == 0:
+                return FileOperationResult(
+                    success=False, error="old_str was not found in the file."
+                )
+            if occurrences > 1:
+                return FileOperationResult(
+                    success=False,
+                    error="old_str appears more than once in the file.",
+                )
+            start_line = text[: text.index(old_str)].count("\n") + 1
+            updated = text.replace(old_str, new_str, 1)
+            await self._sandbox.write_file(path, updated.encode("utf-8"))
+            return FileOperationResult(
+                success=True, output=f"Updated {path}", start_line=start_line
+            )
+        except Exception as exc:
+            return FileOperationResult(success=False, error=str(exc))
+
+    async def create(self, path: str, file_text: str) -> FileOperationResult:
+        if not isinstance(file_text, str):
+            return FileOperationResult(
+                success=False, error="create requires the file_text parameter."
+            )
+        path = self._resolve_path(path)
+        self._env.touch()
+        try:
+            is_update = await self._sandbox.path_exists(path)
+            await self._sandbox.write_file(path, file_text.encode("utf-8"))
+            return FileOperationResult(
+                success=True,
+                output=f"{'Updated' if is_update else 'Created'} {path}",
+                is_update=is_update,
+            )
+        except Exception as exc:
+            return FileOperationResult(success=False, error=str(exc))
+
+    async def insert(
+        self, path: str, insert_line: int, new_str: str
+    ) -> FileOperationResult:
+        if not isinstance(new_str, str):
+            return FileOperationResult(
+                success=False, error="insert requires the new_str parameter."
+            )
+        path = self._resolve_path(path)
+        self._env.touch()
+        try:
+            raw = await self._sandbox.read_file(path)
+            text = raw.decode("utf-8", errors="replace")
+            lines = text.splitlines()
+            if insert_line < 0 or insert_line > len(lines):
+                return FileOperationResult(
+                    success=False,
+                    error=f"insert_line {insert_line} is out of range.",
+                )
+            insertion = new_str.splitlines()
+            updated_lines = lines[:insert_line] + insertion + lines[insert_line:]
+            updated = "\n".join(updated_lines)
+            if text.endswith("\n") or new_str.endswith("\n"):
+                updated += "\n"
+            await self._sandbox.write_file(path, updated.encode("utf-8"))
+            return FileOperationResult(success=True, output=f"Updated {path}")
+        except Exception as exc:
+            return FileOperationResult(success=False, error=str(exc))
+
+    async def get_endpoint(self, port: int) -> SandboxLink | None:
+        return await self._sandbox.get_endpoint(port)
+
+    async def read_file(self, path: str) -> bytes:
+        path = self._resolve_path(path)
+        self._env.touch()
+        return await self._sandbox.read_file(path)
+
+    async def write_file(self, path: str, content: bytes) -> None:
+        path = self._resolve_path(path)
+        self._env.touch()
+        await self._sandbox.write_file(path, content)
+
+    async def path_exists(self, path: str) -> bool:
+        path = self._resolve_path(path)
+        self._env.touch()
+        return await self._sandbox.path_exists(path)
+
+    async def close(self) -> None:
+        await self._sandbox.close()

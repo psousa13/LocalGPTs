@@ -1,0 +1,13 @@
+$R = $PSScriptRoot
+$env:UV_PYTHON_INSTALL_DIR = "$R\python"
+$env:UV_CACHE_DIR          = "$R\.uv-cache"
+$env:HF_HOME               = "$R\hf-cache"
+$env:npm_config_cache      = "$R\.npm-cache"
+$env:OLLAMA_MODELS         = "$R\ollama-models"
+$env:OLLAMA_HOST           = "http://127.0.0.1:11434"
+$env:OLLAMA_NO_CLOUD       = "1"
+$env:GENERATION_MODEL      = "qwen3.5:4b"
+$env:ENRICHMENT_MODEL      = "qwen3.5:2b"
+$env:RERANKER_MODEL        = "Qwen/Qwen3-Reranker-0.6B"
+$env:PATH = "$R\bin;$R\node;$env:PATH"
+$env:PYTHONUTF8 = "1"
