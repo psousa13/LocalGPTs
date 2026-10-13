@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    sqlite3 \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies (using Docker-specific requirements)
+COPY requirements-docker.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy RAG system code and backend dependencies
+COPY rag_system/ ./rag_system/
+COPY backend/ ./backend/
+
+# Create necessary directories
+RUN mkdir -p lancedb index_store shared_uploads logs
+
+# Expose port
+EXPOSE 8001
+
+# Health check. The RAG API is deliberately single-threaded (its shared
+# in-memory pipeline/agent state is only safe because one request runs at a
+# time), so one long /chat or /index blocks /health. The generous start_period
+# covers model loading, and 10 retries ride out routine long requests instead
+# of flapping the container to unhealthy.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=10 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Run the RAG API server
+CMD ["python", "-m", "rag_system.api_server"]

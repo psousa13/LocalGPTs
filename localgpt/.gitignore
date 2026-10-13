@@ -1,0 +1,90 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Python
+__pycache__/
+*.pyc
+
+# Local Data
+/index_store
+/shared_uploads
+chat_history.db
+*.pkl
+
+# Backend generated files
+backend/shared_uploads/
+
+# Vector DB artefacts
+lancedb/
+index_store/overviews/
+
+# Logs and runtime output
+logs/
+*.log
+
+# SQLite or other database files
+*.db
+backend/chroma_db/
+backend/chroma_db/**
+
+# Document and user-uploaded files (PDFs, images, etc.)
+rag_system/documents/
+*.pdf
+
+# Ensure docker.env and .env.example remain tracked
+!docker.env
+!.env.example
+
+# Phase 0 evaluation harness (eval/) — rebuildable artefacts only.
+# The corpora, gold set, scripts and BASELINE.md are tracked.
+eval/.eval_indexes/
+eval/results/
+!eval/corpora/*.pdf
+# The Phase 4 cross-reference corpus lives one directory deeper.
+!eval/corpora/acquisition/*.pdf
+
+
+# local virtualenv
+.venv/
+
+# agent worktree / session state
+.claude/

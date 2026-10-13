@@ -1,5 +1,4 @@
 # rebuilt by Check from upstream + docs/*.diff
-/localgpt/
 # heavy, rebuilt per machine
 hf-cache/
 ollama-models/
@@ -29,3 +28,12 @@ Entradas em SAP*
 Procurement_Contract_Review*
 *Chatbot_Functional_Specification*
 gate-test.txt
+data-openwebui/
+
+# localgpt: source is tracked, runtime data is not
+/localgpt/shared_uploads/
+/localgpt/lancedb/
+/localgpt/index_store/
+/localgpt/logs/
+/localgpt/backend/*.db
+/localgpt/next-env.d.ts

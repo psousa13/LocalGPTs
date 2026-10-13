@@ -1,0 +1,803 @@
+"use client"
+
+import { ConversationPage } from "./conversation-page"
+import { ChatInput } from "./chat-input"
+import { ChatMessage, ChatSession, chatAPI, generateUUID, DEFAULT_GENERATION_MODEL } from "@/lib/api"
+import { AttachedFile } from "@/lib/types"
+import { useEffect, useState, useRef, useMemo, useCallback } from "react"
+import { normalizeStreamingToken } from "@/utils/textNormalization"
+import { Button } from "./button"
+import type { Step } from '@/lib/api'
+import { ChatSettingsModal } from '@/components/ui/chat-settings-modal'
+import { IndexForm } from '@/components/IndexForm'
+import SessionIndexInfo from '@/components/SessionIndexInfo'
+import { Database } from 'lucide-react'
+
+interface SessionChatProps {
+  sessionId?: string
+  onSessionChange?: (session: ChatSession) => void
+  className?: string
+}
+
+// Helper to shorten long titles
+const truncate = (str: string, n: number = 18) => str.length > n ? str.slice(0, n) + '…' : str;
+
+// Chat settings persist in localStorage so they survive unmount/mode switches
+const CHAT_SETTINGS_KEY = 'localgpt.chatSettings'
+
+interface PersistedChatSettings {
+  composeSubAnswers?: boolean
+  enableDecompose?: boolean
+  enableAiRerank?: boolean
+  enableContextExpand?: boolean
+  enableStream?: boolean
+  enableVerify?: boolean
+  forceDocs?: boolean
+  provencePrune?: boolean
+  retrievalK?: number
+  contextWindowSize?: number
+  rerankerTopK?: number
+  searchType?: string
+  selectedModel?: string
+}
+
+const loadPersistedChatSettings = (): PersistedChatSettings => {
+  if (typeof window === 'undefined') return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(CHAT_SETTINGS_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+export function SessionChat({
+  sessionId,
+  onSessionChange,
+  className = ""
+}: SessionChatProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [currentSession, setCurrentSession] = useState<ChatSession | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [uploadedFiles, setUploadedFiles] = useState<{filename: string, stored_path: string}[]>([])
+  const [isIndexed, setIsIndexed] = useState(false)
+  // Settings load once from localStorage; a save effect further down writes them back on change.
+  const persistedSettings = useMemo(loadPersistedChatSettings, [])
+  // Off, matching PIPELINE_CONFIGS["default"].query_decomposition (arm H:
+  // pooled_first_stage with compose_from_sub_answers False) — see eval/DECISIONS.md.
+  const [composeSubAnswers, setComposeSubAnswers] = useState<boolean>(() => persistedSettings.composeSubAnswers ?? false)
+  const [enableDecompose, setEnableDecompose] = useState<boolean>(() => persistedSettings.enableDecompose ?? true)
+  // On by default, matching PIPELINE_CONFIGS["default"].reranker.enabled (arm G)
+  // — see eval/DECISIONS.md. Loads Qwen3-Reranker-4B lazily.
+  const [enableAiRerank, setEnableAiRerank] = useState<boolean>(() => persistedSettings.enableAiRerank ?? true)
+  const [enableContextExpand, setEnableContextExpand] = useState<boolean>(() => persistedSettings.enableContextExpand ?? true)
+  const [enableStream, setEnableStream] = useState<boolean>(() => persistedSettings.enableStream ?? true)
+  const [enableVerify, setEnableVerify] = useState<boolean>(() => persistedSettings.enableVerify ?? true)
+  // Force RAG toggle
+  const [forceDocs, setForceDocs] = useState<boolean>(() => persistedSettings.forceDocs ?? false)
+  // Provence pruning toggle
+  const [provencePrune, setProvencePrune] = useState<boolean>(() => persistedSettings.provencePrune ?? false)
+
+  const [retrievalK, setRetrievalK] = useState<number>(() => persistedSettings.retrievalK ?? 20)
+  const [contextWindowSize, setContextWindowSize] = useState<number>(() => persistedSettings.contextWindowSize ?? 1)
+  const [rerankerTopK, setRerankerTopK] = useState<number>(() => persistedSettings.rerankerTopK ?? 10)
+  const [searchType, setSearchType] = useState<string>(() => persistedSettings.searchType ?? 'hybrid')
+  const [generationModels,setGenerationModels]=useState<string[]>([])
+  const [selectedModel,setSelectedModel]=useState<string>(() => persistedSettings.selectedModel ?? DEFAULT_GENERATION_MODEL)
+  const [currentIndexId, setCurrentIndexId] = useState<string | null>(null)
+  const [currentIndexName, setCurrentIndexName] = useState<string | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [showIndexForm, setShowIndexForm] = useState(false)
+  const [showIndexInfo, setShowIndexInfo] = useState(false)
+  
+  const apiService = chatAPI
+
+  // Persist chat settings on change (loaded on mount above)
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CHAT_SETTINGS_KEY, JSON.stringify({
+        composeSubAnswers, enableDecompose, enableAiRerank, enableContextExpand,
+        enableStream, enableVerify, forceDocs, provencePrune,
+        retrievalK, contextWindowSize, rerankerTopK, searchType, selectedModel,
+      }))
+    } catch {}
+  }, [composeSubAnswers, enableDecompose, enableAiRerank, enableContextExpand, enableStream, enableVerify, forceDocs, provencePrune, retrievalK, contextWindowSize, rerankerTopK, searchType, selectedModel])
+
+  // Monotonic load counter: a slow getSession for a session the user has
+  // already navigated away from must not clobber the one they switched to.
+  const loadSessionSeq = useRef(0)
+
+  // Define loadSession with useCallback before useEffect
+  const loadSession = useCallback(async (id: string) => {
+    const seq = ++loadSessionSeq.current
+    try {
+      setError(null)
+      // Clear per-session state up front — index/upload state from the
+      // previous session must never leak into this one (a stale index id
+      // would override the backend's session-derived table_name).
+      setCurrentIndexId(null)
+      setCurrentIndexName(null)
+      setUploadedFiles([])
+      setIsIndexed(false)
+      const { session, messages: sessionMessages } = await apiService.getSession(id)
+      if (seq !== loadSessionSeq.current) return // superseded by a newer load
+
+      const convertedMessages = sessionMessages.map((msg: unknown) => apiService.convertDbMessage(msg as Record<string, unknown>))
+      setMessages(convertedMessages)
+      setCurrentSession(session)
+
+      if (onSessionChange) {
+        onSessionChange(session)
+      }
+
+      // Fetch linked indexes to know table name for streaming. When the
+      // session has none, the up-front clear above leaves index state empty.
+      try {
+        const idxResp = await apiService.getSessionIndexes(id)
+        if (seq !== loadSessionSeq.current) return
+        if (idxResp.indexes && idxResp.indexes.length > 0) {
+          const lastIdxObj = idxResp.indexes[idxResp.indexes.length - 1] as any
+          const idxId = (lastIdxObj.index_id ?? lastIdxObj.id) as string
+          setCurrentIndexId(idxId ?? null)
+          setCurrentIndexName(lastIdxObj.name ?? lastIdxObj.title ?? idxId.slice(0,8))
+        }
+      } catch {}
+    } catch (error) {
+      if (seq !== loadSessionSeq.current) return
+      console.error('Failed to load session:', error)
+      setError('Failed to load session')
+    }
+  }, [apiService, onSessionChange])
+
+  // Load session when sessionId changes
+  useEffect(() => {
+    if (sessionId) {
+      // Only load session if we don't already have the current session
+      // This prevents overriding messages when a new session is created
+      if (!currentSession || currentSession.id !== sessionId) {
+        loadSession(sessionId)
+      }
+    } else {
+      // No session: invalidate any in-flight load and clear per-session state
+      loadSessionSeq.current++
+      setMessages([])
+      setCurrentSession(null)
+      setCurrentIndexId(null)
+      setCurrentIndexName(null)
+      setUploadedFiles([])
+      setIsIndexed(false)
+    }
+  }, [sessionId, currentSession, loadSession]) // Added missing dependencies
+
+  // Fetch available models on mount
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const resp=await apiService.getModels();
+        setGenerationModels(resp.generation_models||[])
+        if(resp.generation_models&&resp.generation_models.length>0){
+          const def = resp.generation_models.find((m:string)=>m===DEFAULT_GENERATION_MODEL);
+          // Keep a persisted selection only if the backend still offers it
+          setSelectedModel(prev => (prev && resp.generation_models.includes(prev)) ? prev : (def || resp.generation_models[0]))
+        }
+      }catch(e){console.warn('Failed to load models',e)}
+    })()
+  },[apiService])
+
+  const sendMessage = async (content: string, attachedFiles?: AttachedFile[], opts?: { skipUserTurn?: boolean }) => {
+    // --- Guard Clauses ---
+    // If files are being indexed, do nothing.
+    if (uploadedFiles.length > 0 && !isIndexed) {
+      console.warn("sendMessage called while waiting for indexing. Action blocked.");
+      return;
+    }
+    // If no content and no files, do nothing.
+    if (!content.trim() && (!attachedFiles || attachedFiles.length === 0)) return;
+
+    try {
+      setError(null)
+      
+      let activeSessionId = sessionId
+      if (!activeSessionId) {
+        try {
+          const newSession = await apiService.createSession()
+          activeSessionId = newSession.id
+          setCurrentSession(newSession)
+          if (onSessionChange) {
+            onSessionChange(newSession)
+          }
+        } catch (error) {
+          console.error('Failed to create session:', error)
+          setError('Failed to create session')
+          return
+        }
+      }
+
+      // --- Action Router: Decide if this is an upload or a chat message ---
+      
+      // A) UPLOAD ACTION: If files are attached, this action's priority is to upload. Ignore any text content.
+      if (attachedFiles && attachedFiles.length > 0) {
+        setIsLoading(true)
+        try {
+          const files = attachedFiles.map(af => af.file)
+          const uploadResult = await apiService.uploadFiles(activeSessionId, files)
+          console.log('✅ Files uploaded successfully:', uploadResult)
+          
+          setUploadedFiles(uploadResult.uploaded_files)
+          setIsIndexed(false)
+
+          const uploadMessage = apiService.createMessage(
+            `📎 Uploaded ${uploadResult.uploaded_files.length} file(s): ${uploadResult.uploaded_files.map(f => f.filename).join(', ')}. Please click 'Index Documents' to chat with them.`,
+            'assistant'
+          )
+          setMessages(prev => [...prev, uploadMessage])
+        } catch (error) {
+          console.error('❌ Failed to upload files:', error)
+          const errorMessage = apiService.createMessage('❌ Failed to upload files. Please try again.', 'assistant')
+          setMessages(prev => [...prev, errorMessage])
+        } finally {
+          setIsLoading(false)
+        }
+        return; // End the function here.
+      }
+
+      // B) CHAT ACTION: If no files, it's a standard chat message.
+      if (!content.trim()) return;
+
+      // Regenerate passes skipUserTurn: the original user bubble stays in place,
+      // so don't append (or later persist) a duplicate of it.
+      if (!opts?.skipUserTurn) {
+        const userMessage = apiService.createMessage(content, 'user')
+        setMessages(prev => [...prev, userMessage])
+      }
+
+      setIsLoading(true)
+
+      // Ensure we know the index id for table_name; fetch if missing
+      let idxId = currentIndexId;
+      if (!idxId) {
+        try {
+          const idxResp = await apiService.getSessionIndexes(activeSessionId as string);
+          if (idxResp.indexes && idxResp.indexes.length > 0) {
+            const lastIdxObj = idxResp.indexes[idxResp.indexes.length - 1] as any;
+            idxId = (lastIdxObj.index_id ?? lastIdxObj.id) as string;
+            setCurrentIndexId(idxId ?? null);
+            setCurrentIndexName(lastIdxObj.name ?? lastIdxObj.title ?? idxId.slice(0,8));
+          }
+        } catch {}
+      }
+
+      if (enableStream) {
+        // Stepwise progress structure
+        const steps: Step[] = [
+          { key: 'analyze', label: 'Analyzing user question', status: 'pending' as const, details: '' },
+          { key: 'decompose', label: 'Generating sub-queries', status: 'pending' as const, details: '' },
+          { key: 'retrieval', label: 'Retrieving context', status: 'pending' as const, details: '' },
+          // Only ever becomes visible when the evidence-sufficiency retry fires
+          // (retrieval.retry, roadmap 2.1) — on most queries it stays pending.
+          { key: 'retry', label: 'Rechecking weak evidence', status: 'pending' as const, details: '' },
+          { key: 'rerank', label: 'Reranking results', status: 'pending' as const, details: '' },
+          { key: 'expand', label: 'Expanding context window', status: 'pending' as const, details: '' },
+          { key: 'answer', label: 'Answering sub-queries', status: 'pending' as const, details: [] },
+          { key: 'synthesize', label: 'Putting everything together', status: 'pending' as const, details: '' },
+          { key: 'final', label: 'Final answer', status: 'pending' as const, details: '' },
+        ];
+        const placeholder: ChatMessage = {
+          id: generateUUID(),
+          content: { steps },
+          sender: 'assistant',
+          timestamp: new Date().toISOString(),
+          isLoading: false,
+          metadata: { message_type: 'in_progress' }
+        }
+        setMessages(prev => {
+          const withoutLoaders = prev.filter(m => m.metadata?.message_type !== 'in_progress' && !m.isLoading)
+          return [...withoutLoaders, placeholder]
+        })
+        // keep global isLoading true so input disabled until completion
+
+        // Written from the setMessages updater when the 'complete' event lands,
+        // read by the deferred persistence call above. Assignment is idempotent,
+        // so StrictMode's double updater invocation is harmless.
+        const finalStepsSnapshot: { steps: Step[] | null } = { steps: null }
+
+        await apiService.streamSessionMessage(
+          {
+            query: content,
+            session_id: activeSessionId,
+            table_name: idxId ? `text_pages_${idxId}` : undefined,
+            composeSubAnswers,
+            decompose: enableDecompose,
+            aiRerank: enableAiRerank,
+            contextExpand: enableContextExpand,
+            verify: enableVerify,
+            model: selectedModel,
+            retrievalK,
+            contextWindowSize,
+            rerankerTopK,
+            searchType,
+            forceRag: forceDocs,
+            provencePrune,
+          },
+          (evt) => {
+            // 💾 PERSIST + REFRESH on completion. This must happen HERE, in the
+            // event callback (fires exactly once per SSE event) — never inside the
+            // setMessages updater below, which React StrictMode invokes twice and
+            // would persist every turn twice. The save itself is deferred one tick
+            // so the updater has applied and finalStepsSnapshot holds the finished
+            // pipeline cascade (writing a ref-like local from the updater is
+            // idempotent, so StrictMode double-invocation is harmless).
+            if (evt.type === 'complete' && activeSessionId && !opts?.skipUserTurn) {
+              const answerText = typeof evt.data.answer === 'string' ? evt.data.answer : '';
+              const sourceDocs = Array.isArray(evt.data.source_documents) ? evt.data.source_documents : [];
+              setTimeout(async () => {
+                try {
+                  if (answerText) {
+                    await apiService.saveStreamedTurn(
+                      activeSessionId as string, content, answerText, sourceDocs,
+                      finalStepsSnapshot.steps ?? undefined,
+                    );
+                  }
+                  const { session } = await apiService.getSession(activeSessionId as string);
+                  setCurrentSession(session);
+                  if (onSessionChange) {
+                    onSessionChange(session);
+                  }
+                } catch (error) {
+                  console.error('Failed to persist/refresh session after completion:', error);
+                }
+              }, 0);
+            }
+            // The backend emits a terminal 'error' event and then closes the
+            // stream normally — surface it here; the updater below fails the
+            // placeholder's unfinished steps so the cascade doesn't hang.
+            if (evt.type === 'error') {
+              const errText = typeof evt.data?.error === 'string' ? evt.data.error : 'Something went wrong while generating the answer.';
+              setError(errText);
+              setIsLoading(false);
+            }
+            setMessages(prev => prev.map(m => {
+              if (m.id !== placeholder.id) return m;
+              const steps = [...(m.content as any).steps];
+              if (evt.type === 'analyze') {
+                steps[0].status = 'active';
+                steps[0].details = 'Analyzing your question...';
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'decomposition') {
+                steps[0].status = 'done';
+                steps[1].status = 'active';
+                steps[1].details = (evt.data.sub_queries || []);
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'retrieval_started') {
+                steps[1].status = 'done';
+                steps[2].status = 'active';
+                steps[2].details = 'Retrieving relevant documents...';
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'retrieval_done') {
+                const ridx = steps.findIndex(s => s.key === 'retrieval');
+                if (ridx !== -1) {
+                  steps[ridx].status = 'done';
+                  steps[ridx].details = 'Retrieval complete.';
+                }
+                const rrxIdx = steps.findIndex(s => s.key === 'rerank');
+                if (rrxIdx !== -1) {
+                  steps[rrxIdx].status = 'active';
+                  steps[rrxIdx].details = 'Reranking results...';
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'retrieval_retry') {
+                const tidx = steps.findIndex(s => s.key === 'retry');
+                if (tidx !== -1) {
+                  steps[tidx].status = 'done';
+                  steps[tidx].details = evt.data?.kept === 'retry'
+                    ? `Weak evidence (${evt.data?.signal} ${evt.data?.score_before}); retried and kept the better result set.`
+                    : `Weak evidence (${evt.data?.signal} ${evt.data?.score_before}); retry did not improve it, kept the original.`;
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'document_escalation') {
+                // Roadmap 4.1. Reported on the existing "weak evidence" step
+                // rather than a new one: escalation only ever happens because
+                // the evidence was still weak after the retry, and adding an
+                // array entry would shift the positional step indices the rest
+                // of this handler relies on.
+                const tidx = steps.findIndex(s => s.key === 'retry');
+                if (tidx !== -1) {
+                  const prior = typeof steps[tidx].details === 'string' ? steps[tidx].details : '';
+                  const note = `Escalated to the full document "${evt.data?.document_name}" `
+                    + `(${evt.data?.chunks_used}/${evt.data?.chunks_total} chunks, `
+                    + `~${evt.data?.approx_tokens} tokens${evt.data?.truncated ? ', truncated' : ''}).`;
+                  steps[tidx].status = 'done';
+                  steps[tidx].details = prior ? `${prior} ${note}` : note;
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'rerank_started') {
+                const rrxIdx = steps.findIndex(s => s.key === 'rerank');
+                if (rrxIdx !== -1) {
+                  steps[rrxIdx].status = 'active';
+                  steps[rrxIdx].details = 'Reranking results...';
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'rerank_done') {
+                const rrxIdx = steps.findIndex(s => s.key === 'rerank');
+                if (rrxIdx !== -1) {
+                  steps[rrxIdx].status = 'done';
+                  steps[rrxIdx].details = 'Reranking complete.';
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'context_expand_started') {
+                const eidx = steps.findIndex(s => s.key === 'expand');
+                if (eidx !== -1) {
+                  steps[eidx].status = 'active';
+                  steps[eidx].details = 'Expanding context window...';
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'context_expand_done') {
+                const eidx = steps.findIndex(s => s.key === 'expand');
+                if (eidx !== -1) {
+                  steps[eidx].status = 'done';
+                  steps[eidx].details = 'Context expansion complete.';
+                }
+                // Activate answering sub-queries stage to show spinner while we wait
+                const ansIdx = steps.findIndex(s => s.key === 'answer');
+                if (ansIdx !== -1 && steps[ansIdx].status === 'pending') {
+                  steps[ansIdx].status = 'active';
+                  steps[ansIdx].details = 'Answering sub-queries...';
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'sub_query_result') {
+                steps[5].status = 'active';
+                const existing = Array.isArray(steps[5].details) ? steps[5].details : [];
+                if (!existing.some((d: any) => d.question === evt.data.query)) {
+                  steps[5].details = [...existing, {
+                    question: evt.data.query,
+                    answer: evt.data.answer,
+                    source_documents: evt.data.source_documents || []
+                  }];
+                } else {
+                  steps[5].details = existing; // no change if duplicate
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'final_answer' || evt.type === 'single_query_result') {
+                steps[5].status = 'done';
+                steps[6].status = 'active';
+                steps[6].details = 'Synthesizing final answer...';
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'token') {
+                // Determine final step index dynamically (7 for RAG, 0 for direct)
+                const finalIdx = steps.findIndex(s => s.key === 'final' || s.key === 'direct');
+                if (finalIdx === -1) return m;
+                if (steps[finalIdx].key !== 'direct') {
+                  steps[6].status = 'done';
+                  steps[7].status = 'active';
+                } else {
+                  steps[0].status = 'active';
+                }
+                let current = '' as string;
+                const detHolder = steps[finalIdx].details;
+                if (detHolder && typeof detHolder === 'object' && !Array.isArray(detHolder)) {
+                  current = (detHolder as any).answer || '';
+                } else if (typeof detHolder === 'string') {
+                  current = detHolder;
+                }
+                const tok: string = (evt.data.text || '') as string;
+                if (!tok.trim()) {
+                  return m; // skip empty/whitespace-only chunks
+                }
+                let updated = current.endsWith(tok) ? current : current + tok;
+                updated = normalizeStreamingToken('', updated);
+                steps[finalIdx].details = updated;
+                // Mark "Putting everything together" step as done once tokens start
+                const synthIdx = steps.findIndex(s => s.key === 'synthesize');
+                if (synthIdx !== -1 && steps[synthIdx].status !== 'done') {
+                  steps[synthIdx].status = 'done';
+                }
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'sub_query_token') {
+                const idx = evt.data.index as number;
+                const tok: string = evt.data.text || '';
+                if (!tok.trim()) return m;
+                steps[5].status = 'active';
+                let detailsArr: any[] = Array.isArray(steps[5].details) ? steps[5].details as any[] : [];
+                while (detailsArr.length <= idx) {
+                  detailsArr.push({ question: evt.data.question || `Sub-query ${idx+1}`, answer: '' });
+                }
+                const curAns: string = detailsArr[idx].answer || '';
+                if (!curAns.endsWith(tok)) {
+                  let updatedAnswer = curAns + tok;
+                  updatedAnswer = normalizeStreamingToken('', updatedAnswer);
+                  detailsArr[idx].answer = updatedAnswer;
+                }
+                steps[5].details = detailsArr;
+                return { ...m, content: { steps } };
+              }
+              if (evt.type === 'complete') {
+                const finalIdx = steps.findIndex(s => s.key === 'final' || s.key === 'direct');
+                if (finalIdx === -1) return m;
+                steps[finalIdx].status = 'done';
+
+                if (steps[finalIdx].key === 'direct') {
+                  // Direct answer: details is plain string
+                  steps[finalIdx].details = evt.data.answer;
+                } else {
+                  steps[finalIdx].details = {
+                    answer: evt.data.answer,
+                    source_documents: evt.data.source_documents || [],
+                    // Roadmap 4.5: per-query token counts, carried through the
+                    // steps snapshot into the persisted turn. Nothing renders it
+                    // yet — displaying it is tracked as backlog in
+                    // eval/decisions/phase4-escalation-tokens.md.
+                    token_usage: evt.data.token_usage ?? null,
+                  };
+                }
+
+                setIsLoading(false);
+                // Make sure any lingering steps are marked done
+                steps.forEach(s => {
+                  if (s.status !== 'done') s.status = 'done';
+                });
+
+                finalStepsSnapshot.steps = steps;
+                return { ...m, content: { steps }, metadata: { message_type: 'complete' } };
+              }
+              if (evt.type === 'error') {
+                // Terminal backend error: fail every unfinished step so the
+                // placeholder renders the failure instead of spinning forever.
+                steps.forEach(s => {
+                  if (s.status !== 'done') s.status = 'error';
+                });
+                return { ...m, content: { steps }, metadata: { message_type: 'error' } };
+              }
+              if (evt.type === 'direct_answer') {
+                const stepsDir: Step[] = [
+                  { key: 'direct', label: 'Answering directly', status: 'active' as const, details: '' }
+                ];
+                return { ...m, content: { steps: stepsDir } };
+              }
+              return m;
+            }));
+          }
+        )
+      } else {
+        const response = await apiService.sendSessionMessage(activeSessionId, content, { 
+          composeSubAnswers, 
+          decompose: enableDecompose, 
+          aiRerank: enableAiRerank, 
+          contextExpand: enableContextExpand, 
+          verify: enableVerify,
+          model: selectedModel,
+          retrievalK,
+          contextWindowSize,
+          rerankerTopK,
+          searchType,
+          forceRag: forceDocs,
+          provencePrune,
+        })
+
+      const aiMessage: ChatMessage = {
+        id: generateUUID(),
+        content: response.response,
+        sender: 'assistant',
+        timestamp: new Date().toISOString(),
+          metadata: {
+            message_type: 'sub_answer',
+            source_documents: response.source_documents || []
+          }
+      }
+      setMessages(prev => [...prev, aiMessage])
+
+        if (response.session) {
+          setCurrentSession(response.session)
+          if (onSessionChange) onSessionChange(response.session)
+        }
+      }
+
+    } catch (error) {
+      console.error('Failed to send message:', error)
+      setError(error instanceof Error ? error.message : 'Failed to send message')
+      // A mid-stream network failure leaves the step placeholder mid-cascade —
+      // fail its unfinished steps instead of letting it spin forever.
+      setMessages(prev => prev.map(m => {
+        if (m.metadata?.message_type !== 'in_progress') return m
+        const steps = (m.content as { steps: Step[] }).steps
+        return {
+          ...m,
+          content: { steps: steps.map(s => s.status === 'done' ? s : { ...s, status: 'error' as const }) },
+          metadata: { message_type: 'error' }
+        }
+      }))
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleIndexDocuments = async () => {
+    if (!currentSession) return;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const result = await apiService.indexDocuments(currentSession.id);
+      console.log('✅ Indexing complete:', result);
+
+      const indexMessage = apiService.createMessage(
+        `✅ ${result.message}`,
+        'assistant'
+      );
+      setMessages(prev => [...prev, indexMessage]);
+      setIsIndexed(true);
+      setUploadedFiles([]); // Clear uploaded files after indexing
+
+    } catch (error) {
+      console.error('❌ Failed to index documents:', error);
+      const errorMessage = apiService.createMessage(
+        '❌ Failed to index documents. Please try again.',
+        'assistant'
+      );
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const handleAction = async (action: string, messageId: string, messageContent: string | Record<string, any>[] | { steps: Step[] }) => {
+    console.log(`Action ${action} on message ${messageId}`)
+
+    switch (action) {
+      case 'copy':
+        await navigator.clipboard.writeText(typeof messageContent === 'string' ? messageContent : JSON.stringify(messageContent, null, 2))
+        break
+      case 'regenerate':
+        // Find the user message before this AI message and resend it
+        const messageIndex = messages.findIndex(m => m.id === messageId)
+        if (messageIndex > 0 && messages[messageIndex].sender === 'assistant') {
+          const userMessage = messages[messageIndex - 1]
+          if (userMessage.sender === 'user' && typeof userMessage.content === 'string') {
+            // Remove the stale AI message and re-ask WITHOUT re-appending or
+            // re-persisting the user turn (skipUserTurn) — otherwise the
+            // question shows up twice in the UI and in the database.
+            setMessages(prev => prev.filter(m => m.id !== messageId))
+            await sendMessage(userMessage.content, undefined, { skipUserTurn: true })
+          }
+        }
+        break
+      default:
+        // Handle other actions
+        break
+    }
+  }
+
+  const showEmptyState = (!sessionId || messages.length === 0) && !isLoading
+
+  return (
+    <div className={`flex flex-col h-full ${className}`}>
+      {error && (
+        <div className="bg-red-900 text-red-200 px-4 py-2 text-sm flex-shrink-0">
+          {error}
+        </div>
+      )}
+      
+      {showEmptyState ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-6 min-h-0">
+          <div className="text-center text-2xl font-semibold text-gray-300 select-none">What can I help you find today?</div>
+          <div className="w-full max-w-2xl px-4">
+            <ChatInput
+              onSendMessage={sendMessage}
+              disabled={isLoading}
+              placeholder="Ask anything"
+              onOpenSettings={()=>setShowSettings(true)}
+              onAddIndex={()=>setShowIndexForm(true)}
+              leftExtras={currentIndexId && currentIndexName ? (
+                <button
+                  type="button"
+                  onClick={()=>setShowIndexInfo(true)}
+                  title="View index info"
+                  className="flex items-center gap-1 p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-full transition-colors"
+                >
+                  <Database className="w-5 h-5" />
+                  <span className="text-xs hidden sm:inline">{truncate(currentIndexName,12)}</span>
+                </button>
+              ) : undefined}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
+          <ConversationPage 
+            messages={messages}
+            isLoading={isLoading}
+            onAction={handleAction}
+            className="flex-1 overflow-y-auto"
+          />
+
+          {/* Bottom input when chat active */}
+          <div className="flex-shrink-0">
+            {uploadedFiles.length > 0 && !isIndexed && (
+              <div className="p-2 text-center bg-yellow-100 dark:bg-yellow-900 border-t border-b border-gray-200 dark:border-gray-700">
+                <Button onClick={handleIndexDocuments} disabled={isLoading}>
+                  {isLoading ? 'Indexing...' : 'Index Documents to Enable Chat'}
+                </Button>
+              </div>
+            )}
+            <ChatInput
+              onSendMessage={sendMessage}
+              disabled={isLoading || (uploadedFiles.length > 0 && !isIndexed)}
+              placeholder="Message localGPT..."
+              onOpenSettings={()=>setShowSettings(true)}
+              onAddIndex={()=>setShowIndexForm(true)}
+              leftExtras={currentIndexId && currentIndexName ? (
+                <button
+                  type="button"
+                  onClick={()=>setShowIndexInfo(true)}
+                  title="View index info"
+                  className="flex items-center gap-1 p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-full transition-colors"
+                >
+                  <Database className="w-5 h-5" />
+                  <span className="text-xs hidden sm:inline">{truncate(currentIndexName,12)}</span>
+                </button>
+              ) : undefined}
+            />
+          </div>
+        </>
+      )}
+
+      {showSettings && (
+        <ChatSettingsModal
+          onClose={()=>setShowSettings(false)}
+          options={[
+            // General Settings
+            {type: 'toggle', label:'Query decomposition', checked: enableDecompose, setter: setEnableDecompose},
+            {type: 'toggle', label:'Compose sub-answers', checked: composeSubAnswers, setter: setComposeSubAnswers},
+            {type: 'toggle', label:'Verify answer', checked: enableVerify, setter: setEnableVerify},
+            {type: 'toggle', label:'Stream phases', checked: enableStream, setter: setEnableStream},
+            
+            // Retrieval Settings
+            {type: 'dropdown', label:'LLM model', value: selectedModel, setter: setSelectedModel, options: generationModels.map(m=>({value:m,label:m}))},
+            {type: 'dropdown', label:'Search type', value: searchType, setter: setSearchType, options: [
+              {value: 'hybrid', label: 'Hybrid (Vector + FTS)'},
+              {value: 'vector_only', label: 'Vector Only'},
+              {value: 'fts_only', label: 'FTS Only'}
+            ]},
+            {type: 'slider', label:'Retrieval chunks', value: retrievalK, setter: setRetrievalK, min: 5, max: 50, unit: ' chunks'},
+            
+            // Reranking & Context
+            {type: 'toggle', label:'AI reranker', checked: enableAiRerank, setter: setEnableAiRerank},
+            {type: 'slider', label:'Reranker top chunks', value: rerankerTopK, setter: setRerankerTopK, min: 3, max: 20, unit: ' chunks'},
+            {type: 'toggle', label:'Expand context window', checked: enableContextExpand, setter: setEnableContextExpand},
+            {type: 'slider', label:'Context window size', value: contextWindowSize, setter: setContextWindowSize, min: 0, max: 5, unit: ' chunks'},
+            {type: 'toggle', label:'Prune irrelevant sentences', checked: provencePrune, setter: setProvencePrune},
+            {type: 'toggle', label:'Always search documents', checked: forceDocs, setter: setForceDocs},
+          ]}
+        />
+      )}
+
+      {showIndexForm && (
+        <IndexForm
+          onClose={()=>setShowIndexForm(false)}
+          onIndexed={(s)=>{
+            setShowIndexForm(false);
+            setCurrentSession(s);
+            if(onSessionChange) onSessionChange(s);
+          }}
+        />
+      )}
+
+      {/* Index info modal */}
+      {showIndexInfo && currentSession && (
+        <SessionIndexInfo sessionId={currentSession.id} onClose={()=>setShowIndexInfo(false)} />
+      )}
+    </div>
+  )
+}

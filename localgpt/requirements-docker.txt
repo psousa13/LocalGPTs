@@ -1,0 +1,20 @@
+requests
+python-dotenv
+PyMuPDF
+Pillow
+transformers==4.51.0
+torch==2.4.1
+torchvision==0.19.1
+torchaudio
+lancedb
+sentencepiece
+accelerate
+docling
+cachetools
+numpy
+psutil
+httpx
+pandas
+rerankers
+# ocrmac - removed for Docker compatibility (macOS-specific); docling's bundled
+# EasyOCR backend handles OCR on Linux.
