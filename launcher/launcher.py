@@ -40,6 +40,8 @@ def base_env(cfg):
         "OLLAMA_MODELS": str(ROOT / "ollama-models"),
         "OLLAMA_HOST": "http://127.0.0.1:11434",
         "OLLAMA_NO_CLOUD": "1",
+        "DATA_DIR": str(ROOT / "data-openwebui"),
+        "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
         "GENERATION_MODEL": "qwen3.5:4b",
         "ENRICHMENT_MODEL": "qwen3.5:2b",
         "RERANKER_MODEL": "Qwen/Qwen3-Reranker-0.6B",
@@ -166,6 +168,7 @@ class App:
         if self.busy or self.checking:
             return
         self.checking = True
+        self.gpt_name = (self.selected() or GPTS[0])["name"]
         self.set_buttons("disabled", "disabled")
         threading.Thread(target=self.run_check, daemon=True).start()
 
@@ -174,7 +177,7 @@ class App:
         try:
             sys.path.insert(0, str(HERE))
             from setup_steps import Setup
-            ok = Setup(self).run_all()
+            ok = Setup(self, self.gpt_name).run_all()
         except Exception as ex:
             self.logline("[setup] ERROR: " + repr(ex))
         self.checking = False
@@ -191,7 +194,7 @@ class App:
         if not cfg:
             self.say("No " + OS + " entry for " + g["name"])
             return
-        if not (ROOT / cfg.get("cwd", ".")).exists():
+        if not (ROOT / cfg.get("cwd", ".")).exists() or (cfg.get("venv_bin") and not (ROOT / cfg["venv_bin"]).exists()):
             self.say("Not installed yet. Press Check first.")
             return
         self.busy = True
@@ -259,7 +262,7 @@ class App:
                         return
                 try:
                     with urllib.request.urlopen(g["health_url"], timeout=3) as r:
-                        if r.status == 200 and b"ok" in r.read():
+                        if r.status == 200 and g.get("health_match", "ok").encode() in r.read():
                             self.open_url = g["open_url"]
                             self.say("Ready. Opened " + g["open_url"])
                             webbrowser.open(g["open_url"])

@@ -8,22 +8,121 @@
     "linux": {
       "cwd": "localgpt",
       "venv_bin": "localgpt/.venv-linux/bin",
-      "path": ["bin-linux", "node-linux/bin"],
-      "env": {"CUDA_VISIBLE_DEVICES": ""},
+      "path": [
+        "bin-linux",
+        "node-linux/bin"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": ""
+      },
       "services": [
-        {"name": "ollama", "cmd": ["ollama", "serve"], "env": {"OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_CONTEXT_LENGTH": "4096"}, "mem": "3G", "wait_port": 11434},
-        {"name": "localgpt", "cmd": ["python", "run_system.py"], "mem": "9G"}
+        {
+          "name": "ollama",
+          "cmd": [
+            "ollama",
+            "serve"
+          ],
+          "env": {
+            "OLLAMA_MAX_LOADED_MODELS": "1",
+            "OLLAMA_CONTEXT_LENGTH": "4096"
+          },
+          "mem": "3G",
+          "wait_port": 11434
+        },
+        {
+          "name": "localgpt",
+          "cmd": [
+            "python",
+            "run_system.py"
+          ],
+          "mem": "9G"
+        }
       ]
     },
     "windows": {
       "cwd": "localgpt",
       "venv_bin": "localgpt/.venv/Scripts",
-      "path": ["bin", "node", "ollama"],
+      "path": [
+        "bin",
+        "node",
+        "ollama"
+      ],
       "env": {},
       "timeout": 600,
       "services": [
-        {"name": "ollama", "cmd": ["ollama", "serve"], "env": {"OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_CONTEXT_LENGTH": "4096"}, "wait_port": 11434},
-        {"name": "localgpt", "cmd": ["python", "run_system.py"]}
+        {
+          "name": "ollama",
+          "cmd": [
+            "ollama",
+            "serve"
+          ],
+          "env": {
+            "OLLAMA_MAX_LOADED_MODELS": "1",
+            "OLLAMA_CONTEXT_LENGTH": "4096"
+          },
+          "wait_port": 11434
+        },
+        {
+          "name": "localgpt",
+          "cmd": [
+            "python",
+            "run_system.py"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "Open WebUI",
+    "description": "RAG-only chat (Open WebUI + Ollama).",
+    "health_url": "http://127.0.0.1:8080/health",
+    "health_match": "status",
+    "open_url": "http://127.0.0.1:8080",
+    "timeout": 300,
+    "linux": {
+      "cwd": "open-webui",
+      "venv_bin": "open-webui/.venv-linux/bin",
+      "path": [
+        "bin-linux"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "",
+        "ENABLE_OPENAI_API": "false",
+        "ENABLE_WEB_SEARCH": "false",
+        "ENABLE_PERSISTENT_CONFIG": "False",
+        "ENABLE_RAG_HYBRID_SEARCH": "false",
+        "RAG_TOP_K": "3",
+        "RAGONLY_MIN_SCORE": "0",
+        "SCARF_NO_ANALYTICS": "true",
+        "DO_NOT_TRACK": "true",
+        "ANONYMIZED_TELEMETRY": "false"
+      },
+      "services": [
+        {
+          "name": "ollama",
+          "cmd": [
+            "ollama",
+            "serve"
+          ],
+          "env": {
+            "OLLAMA_MAX_LOADED_MODELS": "1",
+            "OLLAMA_CONTEXT_LENGTH": "4096"
+          },
+          "mem": "3G",
+          "wait_port": 11434
+        },
+        {
+          "name": "open-webui",
+          "cmd": [
+            "open-webui",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080"
+          ],
+          "mem": "6G"
+        }
       ]
     }
   }

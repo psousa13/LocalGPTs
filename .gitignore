@@ -37,3 +37,5 @@ data-openwebui/
 /localgpt/logs/
 /localgpt/backend/*.db
 /localgpt/next-env.d.ts
+open-webui/.webui_secret_key
+.webui_secret_key

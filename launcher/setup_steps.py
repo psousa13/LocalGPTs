@@ -13,6 +13,11 @@ HF_REPOS = ["microsoft/harrier-oss-v1-0.6b", "Qwen/Qwen3-Reranker-0.6B"]
 NODE_PREFIX = "v22."
 PORT = 11434
 LG = ROOT / "localgpt"
+OW = ROOT / "open-webui"
+OWVENV = OW / (".venv" if IS_WIN else ".venv-linux")
+OWPY = OWVENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
+OW_DIR = ROOT / "launcher" / "openwebui"
+TORCH_CPU = "https://download.pytorch.org/whl/cpu"
 
 if IS_WIN:
     BIN, NODE, PYDIR = ROOT / "bin", ROOT / "node", ROOT / "python"
@@ -67,8 +72,9 @@ def _win_kw(extra=0):
 
 
 class Setup:
-    def __init__(self, app):
+    def __init__(self, app, gpt="LocalGPT"):
         self.app = app
+        self.gpt = gpt
         self.env = make_env()
         self.server = None
         self.steps = [
@@ -80,6 +86,13 @@ class Setup:
             ("Ollama models", self.c_models, self.i_models),
             ("embedder and reranker", self.c_hf, self.i_hf),
         ]
+        if gpt == "Open WebUI":
+            self.steps = [
+                ("portable uv", self.c_uv, self.i_uv),
+                ("Python 3.11", self.c_python, self.i_python),
+                ("Open WebUI packages (venv)", self.c_owvenv, self.i_owvenv),
+                ("Ollama models", self.c_models, self.i_models),
+            ]
 
     # ---------- helpers ----------
     def log(self, msg):
@@ -322,6 +335,25 @@ class Setup:
                 return False
         return True
 
+    # ---------- Open WebUI ----------
+    def c_owvenv(self):
+        if not OWPY.exists():
+            return False
+        self.log("checking Open WebUI packages against the pin file...")
+        code, out = self.capture([OWPY, OW_DIR / "check_env.py", OW_DIR / "requirements.txt"], timeout=300)
+        for ln in out.splitlines():
+            if ln.strip():
+                self.log("  " + ln)
+        return code == 0
+
+    def i_owvenv(self):
+        if not OWPY.exists():
+            if self.run([UV, "venv", "--python", PYSPEC, OWVENV], cwd=OW, tag="uv") != 0:
+                return False
+        return self.run([UV, "pip", "install", "--python", OWPY, "-r", OW_DIR / "requirements.txt",
+                         "--extra-index-url", TORCH_CPU, "--index-strategy", "unsafe-best-match"],
+                        cwd=OW, tag="uv") == 0
+
     # ---------- main flow ----------
     def run_all(self):
         try:
@@ -355,7 +387,7 @@ class Setup:
             return True
         free = shutil.disk_usage(ROOT).free / 2 ** 30
         msg = ("Missing:\n- " + "\n- ".join(t[0] for t in todo) +
-               "\n\nThe first full install downloads roughly 10 to 15 GB and needs internet.\n"
+               "\n\nThe first full install downloads roughly " + ("10 to 15 GB" if self.gpt == "LocalGPT" else "a few GB") + " and needs internet.\n"
                "Free disk space: %.0f GB.\n\nInstall now?" % free)
         if not self.ask(msg):
             self.app.say("Setup cancelled")
