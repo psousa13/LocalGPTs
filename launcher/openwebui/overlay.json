@@ -1,0 +1,13 @@
+{
+  "open-webui": "0.12.0",
+  "files": {
+    "config.py": {
+      "stock": "f68ae9ffca35fdb117b9452812da6468431d66790c9e11f2ecb8be0f58906c50",
+      "edited": "ba9a5bea9651a78495085e224f7fa4953c6ea527c02d40e601653bb9ab917e1f"
+    },
+    "utils/middleware.py": {
+      "stock": "a0f6d33dd7e657347a4b4e639a237e0f940823a018dd4ec62291f31bcde2209a",
+      "edited": "4722b0a5cc8e270a49e811af83890ae2ffa3fcad81525743fae20f5467fee3a7"
+    }
+  }
+}

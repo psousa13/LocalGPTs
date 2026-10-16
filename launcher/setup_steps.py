@@ -91,6 +91,7 @@ class Setup:
                 ("portable uv", self.c_uv, self.i_uv),
                 ("Python 3.11", self.c_python, self.i_python),
                 ("Open WebUI packages (venv)", self.c_owvenv, self.i_owvenv),
+                ("Open WebUI RAG-only edits", self.c_owedits, self.i_owedits),
                 ("Ollama models", self.c_models, self.i_models),
             ]
 
@@ -353,6 +354,46 @@ class Setup:
         return self.run([UV, "pip", "install", "--python", OWPY, "-r", OW_DIR / "requirements.txt",
                          "--extra-index-url", TORCH_CPU, "--index-strategy", "unsafe-best-match"],
                         cwd=OW, tag="uv") == 0
+
+    def _ow_pkg(self):
+        code, out = self.capture([OWPY, "-c",
+            "import importlib.util,pathlib;print(pathlib.Path(importlib.util.find_spec('open_webui').origin).parent)"], timeout=120)
+        return Path(out.strip()) if code == 0 and out.strip() else None
+
+    def _sha(self, p):
+        import hashlib
+        return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+    def c_owedits(self):
+        if not OWPY.exists():
+            return False
+        pkg = self._ow_pkg()
+        if not pkg:
+            return False
+        man = json.loads((OW_DIR / "overlay.json").read_text(encoding="utf-8"))
+        good = 0
+        for rel, h in man["files"].items():
+            f = pkg / rel
+            if f.exists() and self._sha(f) == h["edited"]:
+                good += 1
+        self.log("  your Open WebUI edits: %d of %d files match" % (good, len(man["files"])))
+        return good == len(man["files"])
+
+    def i_owedits(self):
+        pkg = self._ow_pkg()
+        if not pkg:
+            return False
+        man = json.loads((OW_DIR / "overlay.json").read_text(encoding="utf-8"))
+        for rel, h in man["files"].items():
+            f = pkg / rel
+            cur = self._sha(f)
+            if cur not in (h["stock"], h["edited"]):
+                self.log("REFUSED: %s is neither the stock nor the edited version (wrong Open WebUI version?)" % rel)
+                return False
+        for rel in man["files"]:
+            shutil.copy(OW_DIR / "overlay" / rel, pkg / rel)
+            self.log("  installed " + rel)
+        return True
 
     # ---------- main flow ----------
     def run_all(self):
