@@ -146,7 +146,8 @@
         "PGPT_WEBSEARCH_ENABLED": "false",
         "PGPT_LOCAL_DATA_FOLDER": "$ROOT/data-privategpt/local_data",
         "PGPT_QDRANT_PATH": "$ROOT/data-privategpt/qdrant",
-        "DO_NOT_TRACK": "true"
+        "DO_NOT_TRACK": "true",
+        "PGPT_LLM_DEFAULT": "qwen3.5:4b"
       },
       "services": [
         {
