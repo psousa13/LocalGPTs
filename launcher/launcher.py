@@ -54,7 +54,7 @@ def base_env(cfg):
     if IS_WIN:
         vals, skipped = read_env_ps1()
         e.update(vals)
-    e.update(cfg.get("env", {}))
+    e.update({k: str(v).replace("$ROOT", str(ROOT)) for k, v in cfg.get("env", {}).items()})
     dirs = [ROOT / d for d in cfg.get("path", [])]
     if cfg.get("venv_bin"):
         dirs.insert(0, ROOT / cfg["venv_bin"])
@@ -220,6 +220,8 @@ class App:
                 if svc.get("wait_port") and port_open(svc["wait_port"]):
                     if svc["name"] == "ollama":
                         self.logline("[launcher] Ollama is already running on port " + str(svc["wait_port"]) + "; using it.")
+                        if not self.wait_models(svc):
+                            return
                         continue
                     self.logline("[launcher] " + svc["name"] + ": port " + str(svc["wait_port"]) +
                                  " is already in use. Stop the other instance first.")
@@ -253,6 +255,8 @@ class App:
                     else:
                         self.fail(svc["name"] + " did not open port " + str(svc["wait_port"]))
                         return
+                if svc.get("wait_models") and not self.wait_models(svc):
+                    return
             self.say("Waiting for " + g["name"] + " to be ready...")
             start = time.time()
             while time.time() - start < timeout:
@@ -274,6 +278,21 @@ class App:
             self.fail("Health check timed out after " + str(timeout) + " s")
         except Exception as ex:
             self.fail("Launcher error: " + repr(ex))
+
+    def wait_models(self, svc):
+        need, have = set(svc["wait_models"]), set()
+        self.say("Waiting for Ollama models...")
+        for _ in range(60):
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as r:
+                    have = {x["name"] for x in json.load(r).get("models", [])}
+                if need <= have:
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        self.fail("Ollama is missing: " + ", ".join(sorted(need - have)))
+        return False
 
     def fail(self, msg):
         self.say("FAILED: " + msg)

@@ -39,3 +39,4 @@ data-openwebui/
 /localgpt/next-env.d.ts
 open-webui/.webui_secret_key
 .webui_secret_key
+data-privategpt/

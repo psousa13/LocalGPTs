@@ -125,5 +125,60 @@
         }
       ]
     }
+  },
+  {
+    "name": "PrivateGPT",
+    "description": "RAG chat (PrivateGPT + Ollama), web search removed.",
+    "health_url": "http://127.0.0.1:8002/health",
+    "open_url": "http://127.0.0.1:8002/ui",
+    "timeout": 300,
+    "linux": {
+      "cwd": "data-privategpt",
+      "venv_bin": "private-gpt/.venv-linux/bin",
+      "path": [
+        "bin-linux"
+      ],
+      "env": {
+        "OPENAI_API_BASE": "http://127.0.0.1:11434/v1",
+        "OPENAI_EMBEDDING_API_BASE": "http://127.0.0.1:11434/v1",
+        "PGPT_OFFLINE_MODE": "true",
+        "PGPT_RETRIEVAL_TOP_K": "4",
+        "PGPT_WEBSEARCH_ENABLED": "false",
+        "PGPT_LOCAL_DATA_FOLDER": "$ROOT/data-privategpt/local_data",
+        "PGPT_QDRANT_PATH": "$ROOT/data-privategpt/qdrant",
+        "DO_NOT_TRACK": "true"
+      },
+      "services": [
+        {
+          "name": "ollama",
+          "cmd": [
+            "ollama",
+            "serve"
+          ],
+          "env": {
+            "OLLAMA_MAX_LOADED_MODELS": "1",
+            "OLLAMA_CONTEXT_LENGTH": "4096"
+          },
+          "mem": "3G",
+          "wait_port": 11434,
+          "wait_models": [
+            "qwen3.5:2b",
+            "qwen3.5:4b",
+            "mxbai-embed-large:latest"
+          ]
+        },
+        {
+          "name": "private-gpt",
+          "cmd": [
+            "private-gpt",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8002"
+          ]
+        }
+      ]
+    }
   }
 ]

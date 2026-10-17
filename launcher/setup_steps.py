@@ -18,6 +18,12 @@ OWVENV = OW / (".venv" if IS_WIN else ".venv-linux")
 OWPY = OWVENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
 OW_DIR = ROOT / "launcher" / "openwebui"
 TORCH_CPU = "https://download.pytorch.org/whl/cpu"
+PG = ROOT / "private-gpt"
+PGVENV = PG / (".venv" if IS_WIN else ".venv-linux")
+PGPY = PGVENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
+PG_DIR = ROOT / "launcher" / "privategpt"
+PG_DATA = ROOT / "data-privategpt"
+PG_WHEELS = "https://wheels.privategpt.dev/packages/"
 
 if IS_WIN:
     BIN, NODE, PYDIR = ROOT / "bin", ROOT / "node", ROOT / "python"
@@ -76,6 +82,7 @@ class Setup:
         self.app = app
         self.gpt = gpt
         self.env = make_env()
+        self.models = list(MODELS) + (["mxbai-embed-large:latest"] if gpt == "PrivateGPT" else [])
         self.server = None
         self.steps = [
             ("portable uv", self.c_uv, self.i_uv),
@@ -92,6 +99,15 @@ class Setup:
                 ("Python 3.11", self.c_python, self.i_python),
                 ("Open WebUI packages (venv)", self.c_owvenv, self.i_owvenv),
                 ("Open WebUI RAG-only edits", self.c_owedits, self.i_owedits),
+                ("Ollama models", self.c_models, self.i_models),
+            ]
+
+        if gpt == "PrivateGPT":
+            self.steps = [
+                ("portable uv", self.c_uv, self.i_uv),
+                ("Python 3.11", self.c_python, self.i_python),
+                ("PrivateGPT packages (venv)", self.c_pgvenv, self.i_pgvenv),
+                ("PrivateGPT edits (web search removed)", self.c_pgedits, self.i_pgedits),
                 ("Ollama models", self.c_models, self.i_models),
             ]
 
@@ -264,7 +280,7 @@ class Setup:
     def c_models(self):
         if not self.ensure_server():
             return False
-        return set(MODELS) <= self.listed_models()
+        return set(self.models) <= self.listed_models()
 
     def _hf_dir(self, repo):
         return ROOT / "hf-cache" / "hub" / ("models--" + repo.replace("/", "--")) / "snapshots"
@@ -321,7 +337,7 @@ class Setup:
     def i_models(self):
         exe = self.ollama_exe()
         have = self.listed_models()
-        for m in MODELS:
+        for m in self.models:
             if m not in have and self.run([exe, "pull", m], tag="ollama") != 0:
                 return False
         return True
@@ -392,6 +408,60 @@ class Setup:
                 return False
         for rel in man["files"]:
             shutil.copy(OW_DIR / "overlay" / rel, pkg / rel)
+            self.log("  installed " + rel)
+        return True
+
+    # ---------- PrivateGPT ----------
+    def c_pgvenv(self):
+        PG_DATA.mkdir(exist_ok=True)
+        if not PGPY.exists():
+            return False
+        self.log("checking PrivateGPT packages against the pin file...")
+        code, out = self.capture([PGPY, PG_DIR / "check_env.py", PG_DIR / "requirements.txt"], timeout=300)
+        for ln in out.splitlines():
+            if ln.strip():
+                self.log("  " + ln)
+        return code == 0
+
+    def i_pgvenv(self):
+        if not PGPY.exists():
+            if self.run([UV, "venv", "--python", PYSPEC, PGVENV], cwd=PG, tag="uv") != 0:
+                return False
+        return self.run([UV, "pip", "install", "--python", PGPY, "-r", PG_DIR / "requirements.txt",
+                         "--find-links", PG_WHEELS], cwd=PG, tag="uv") == 0
+
+    def _pg_sp(self):
+        code, out = self.capture([PGPY, "-I", "-c",
+            "import importlib.util,pathlib;s=importlib.util.find_spec('private_gpt');print(pathlib.Path(list(s.submodule_search_locations)[0]).parent)"], timeout=120)
+        return Path(out.strip()) if code == 0 and out.strip() else None
+
+    def c_pgedits(self):
+        if not PGPY.exists():
+            return False
+        sp = self._pg_sp()
+        if not sp:
+            return False
+        man = json.loads((PG_DIR / "overlay.json").read_text(encoding="utf-8"))
+        good = 0
+        for rel, h in man["files"].items():
+            f = sp / rel
+            if f.exists() and self._sha(f) == h["edited"]:
+                good += 1
+        self.log("  your PrivateGPT edits: %d of %d files match" % (good, len(man["files"])))
+        return good == len(man["files"])
+
+    def i_pgedits(self):
+        sp = self._pg_sp()
+        if not sp:
+            return False
+        man = json.loads((PG_DIR / "overlay.json").read_text(encoding="utf-8"))
+        for rel, h in man["files"].items():
+            cur = self._sha(sp / rel)
+            if cur not in (h["stock"], h["edited"]):
+                self.log("REFUSED: %s is neither the stock nor the edited version (wrong PrivateGPT version?)" % rel)
+                return False
+        for rel in man["files"]:
+            shutil.copy(PG_DIR / "overlay" / rel, sp / rel)
             self.log("  installed " + rel)
         return True
 

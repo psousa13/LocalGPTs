@@ -1,0 +1,17 @@
+{
+  "private-gpt": "1.0.1",
+  "files": {
+    "private_gpt/components/tools/tool_names.py": {
+      "stock": "add1b7e3f7c45ac99dc583fc6e43b00dcee2eb8612cb23b4f462b62739cbfd86",
+      "edited": "66a5f6c6d226892deb13f218dd4c780f36adc0011fd87e2d7cd48a8ccf23f67e"
+    },
+    "private_gpt/server/tools/tool_router.py": {
+      "stock": "e0e038084dd404ce7ae960ca6cdf1607ef7d799b1fdbd19ebbd28b47c9342784",
+      "edited": "19ca552ee2575aaf8ccc81019848fe4d6ce094fde3ad7718e3ab8249a77c6f91"
+    },
+    "ui/index.html": {
+      "stock": "a0d0e5b12f7b68f0149936b53dbdb48fce947342f312d653bc23076ea48cd847",
+      "edited": "4755933d6af709876237f9278ad59ddd7d555ef17b889a34956d3045859612bd"
+    }
+  }
+}
